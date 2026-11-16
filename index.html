@@ -552,6 +552,29 @@ function renderGoogleImported(){
 }
 // Importa compromissos externos para a agenda do estúdio de forma idempotente.
 // Não cria receitas, sinais nem movimentações financeiras.
+// Interpreta apenas títulos com separadores explícitos para evitar nomes incorretos.
+function ktParseGoogleTitle(raw){
+ const title=String(raw||'').trim();
+ const parts=title.split(/\s+[-–—|]\s+/).map(x=>x.trim()).filter(Boolean);
+ if(parts.length<2)return null;
+ const isTattoo=x=>/^(?:tattoo|tatuagem|tatto|tattoo\s+teste|teste)$/i.test(x);
+ let name='',service='';
+ if(isTattoo(parts[0])&&parts.length>=3){name=parts[1];service=parts.slice(2).join(' - ')}
+ else if(isTattoo(parts[0])&&parts.length===2){name=parts[1];service='Tatuagem a definir'}
+ else if(parts.length>=2&&/^(?:cliente|nome)\s*:/i.test(parts[0])){name=parts[0].replace(/^(?:cliente|nome)\s*:/i,'').trim();service=parts.slice(1).join(' - ')}
+ else return null;
+ name=name.replace(/^(?:cliente)\s+/i,'').trim();
+ if(!name||name.length>90||/^(?:teste|cliente|tatuagem|tattoo)$/i.test(name))return null;
+ return {name,service};
+}
+function ktFindOrCreateGoogleClient(name){
+ const normName=x=>String(x||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().replace(/\s+/g,' ').toLocaleLowerCase('pt-BR');
+ const matches=db.clientes.filter(c=>!c.googlePlaceholder&&normName(c.nome)===normName(name));
+ if(matches.length===1)return matches[0];
+ if(matches.length>1)return null; // nomes repetidos: exigir identificação manual
+ const c={id:uid(),nome:name,telefone:'',instagram:'',obs:'Criado automaticamente a partir do Google Agenda. Confirmar WhatsApp antes de enviar mensagens.',googleAutoClient:true};
+ db.clientes.push(c);return c;
+}
 function importExternalAppointments(events, calendarId){
  let created=0;
  for(const event of events){
@@ -560,10 +583,11 @@ function importExternalAppointments(events, calendarId){
   if(db.agenda.some(a=>a.googleExternalKey===key||a.googleExternalEventId===event.id&&a.googleExternalCalendarId===calendarId))continue;
   // A identificação por evento é estável mesmo quando o usuário edita o título.
   const title=String(event.titulo||'Compromisso Google').trim();
-  // Usa um cliente técnico único para não atribuir o compromisso à pessoa errada.
-  let placeholder=db.clientes.find(c=>c.googlePlaceholder===true);
-  if(!placeholder){placeholder={id:uid(),nome:'Cliente a identificar (Google Agenda)',telefone:'',instagram:'',obs:'Cadastro técnico de eventos importados; substitua pelo cliente correto.',googlePlaceholder:true};db.clientes.push(placeholder)}
-  db.agenda.push({id:uid(),clienteId:placeholder.id,data:event.data,hora:event.hora,servico:title,valor:0,sinal:0,status:'Pendente',obs:'Importado automaticamente do Google Agenda. Confira cliente, serviço e valor antes de cobrar.\nEvento: '+event.id,googleExternalKey:key,googleExternalCalendarId:calendarId,googleExternalEventId:event.id});
+  const parsed=ktParseGoogleTitle(title);
+  let linked=parsed?ktFindOrCreateGoogleClient(parsed.name):null;
+  if(!linked){linked=db.clientes.find(c=>c.googlePlaceholder===true);
+   if(!linked){linked={id:uid(),nome:'Cliente a identificar (Google Agenda)',telefone:'',instagram:'',obs:'Cadastro técnico de eventos importados; substitua pelo cliente correto.',googlePlaceholder:true};db.clientes.push(linked)}}
+  db.agenda.push({id:uid(),clienteId:linked.id,data:event.data,hora:event.hora,servico:parsed?.service||title,valor:0,sinal:0,status:'Pendente',obs:'Importado automaticamente do Google Agenda. Confira cliente, serviço e valor antes de cobrar.\nEvento: '+event.id,googleExternalKey:key,googleExternalCalendarId:calendarId,googleExternalEventId:event.id});
   created++;
  }
  return created;
@@ -590,11 +614,19 @@ async function importGoogleEvents(manual){
   const priorGoogleJSON=JSON.stringify(importedGoogle());
   db.googleImportedEvents=[...previous,...incoming];
   const created=importExternalAppointments(incoming,cal);
+  let identified=0;
+  for(const ev of incoming){
+   const a=db.agenda.find(x=>x.googleExternalEventId===ev.id&&x.googleExternalCalendarId===cal);
+   if(!a||!client(a.clienteId)?.googlePlaceholder)continue;
+   const parsed=ktParseGoogleTitle(ev.titulo);if(!parsed)continue;
+   const linked=ktFindOrCreateGoogleClient(parsed.name);if(!linked)continue;
+   a.clienteId=linked.id;a.servico=parsed.service;a.obs=(a.obs||'')+'\nCliente identificado automaticamente pelo título do Google Agenda.';identified++;
+  }
   // Não grava o banco a cada consulta: evita colisões com alterações de outros dispositivos.
-  const changed=created>0||priorGoogleJSON!==JSON.stringify(db.googleImportedEvents);
+  const changed=created>0||identified>0||priorGoogleJSON!==JSON.stringify(db.googleImportedEvents);
   if(changed){save();await window.ktCloudFlush();}
   lastGooglePoll=Date.now();renderGoogleImported();
-  if(created){renderAgenda();renderHome();if(typeof extraRender==='function')extraRender();}
+  if(created||identified){renderAgenda();renderHome();if(typeof extraRender==='function')extraRender();}
   if(manual||created)status('Consulta concluída: '+incoming.length+' evento(s) externo(s); '+created+' novo(s) agendamento(s) criado(s) na aba Agenda. '+(created?'Abra Agenda e limpe o filtro de busca/mês para visualizar. ':'Eventos já cadastrados não são duplicados. ')+'Financeiro preservado.');
  }catch(e){status('Não foi possível consultar os eventos do Google: '+e.message)}finally{importingGoogle=false}
 }
