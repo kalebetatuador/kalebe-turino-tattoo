@@ -240,8 +240,9 @@ const $k=id=>document.getElementById(id),safe=v=>esc(v),num=v=>Number(v)||0;
 // A conta é a fonte de verdade; uma despesa paga cria uma única movimentação vinculada.
 function ensure(){if(!Array.isArray(db.contas))db.contas=[]}
 const finSection=$k('financeiro');
-const dash=document.createElement('div');dash.className='panel';dash.id='ktProfessionalDashboard';dash.innerHTML=`<div class="row between"><h2>Painel financeiro profissional</h2><div class="kt-toolbar"><label>Fechamento em <input type="month" id="ktDashMonth"></label></div></div><div class="kt-metrics" id="ktMetrics"></div><p class="kt-section-note">Fechamento do dia 11 ao dia 10. Valor total: tattoos contratadas no período. Despesas: contas pagas e pendentes do período. Sinais e antecipações: soma dos valores recebidos antecipadamente nas tattoos deste fechamento, inclusive pagamentos integrais, independentemente da data do pagamento. Falta receber: saldo das tattoos após descontar todos os pagamentos. Faturamento total recebido: pagamentos vinculados às tattoos deste fechamento, incluindo sinais, mais outras receitas do ciclo; não representa apenas as entradas de caixa pela data.</p>`;
+const dash=document.createElement('div');dash.className='panel';dash.id='ktProfessionalDashboard';dash.innerHTML=`<div class="row between"><h2>Painel financeiro profissional</h2><div class="kt-toolbar"><label>Fechamento em <input type="month" id="ktDashMonth"></label></div></div><div class="kt-metrics" id="ktMetrics"></div><p class="kt-section-note">Fechamento do dia 11 ao dia 10. Valor total: tattoos contratadas no período. Despesas: contas pagas e pendentes do período. Sinais e antecipações: soma dos valores recebidos antecipadamente nas tattoos deste fechamento, inclusive pagamentos integrais, independentemente da data do pagamento. Falta receber: saldo das tattoos após descontar todos os pagamentos. Recebido no caixa: receitas efetivamente registradas pela data do recebimento, mesmo antes da tatuagem. Pagamentos das tattoos deste fechamento: recebimentos vinculados às sessões agendadas no período, mesmo quando pagos em outra data. Confira as linhas abaixo para localizar registros ausentes.</p>`;
 finSection.insertBefore(dash,finSection.firstChild);
+const audit=document.createElement('div');audit.className='panel';audit.id='ktAuditPanel';audit.innerHTML='<h2>Conferência de tatuagens e pagamentos</h2><p class="hint">Confira cada cliente com sua planilha. Valores recebidos entram no caixa pela data real do pagamento, mesmo antes da sessão. Caso uma tatuagem não apareça, cadastre-a na Agenda.</p><div id="ktAuditSummary"></div><div id="ktAuditRows"></div><div class="actions"><button class="primary" onclick="switchTab(\'agenda\')">Abrir agenda para corrigir</button></div>';dash.after(audit);
 // Remover os quatro indicadores antigos redundantes, sem alterar as movimentações.
 const oldFinanceGrid=Array.from(finSection.children).find(x=>x.classList.contains('grid'));if(oldFinanceGrid)oldFinanceGrid.hidden=true;
 const tab=document.createElement('button');tab.dataset.tab='despesas';tab.textContent='Despesas';$k('tabs').insertBefore(tab,document.querySelector('#tabs [data-tab="financeiro"]').nextSibling);
@@ -298,12 +299,18 @@ function draw(){
  const expenseTotal=bills.reduce((s,c)=>s+num(c.valor),0)+legacyCycle.reduce((s,f)=>s+num(f.valor),0);
  const expensePaid=bills.filter(c=>c.status==='pago').reduce((s,c)=>s+num(c.valor),0)+legacyCycle.reduce((s,f)=>s+num(f.valor),0);
  const result=total-expenseTotal;
+ const actualCash=received;
+ const allPaid=appointments.reduce((s,a)=>s+Math.min(num(a.valor),Math.max(0,ktPaid(a.id))),0);
  $k('ktMetrics').innerHTML='<p class="hint" style="grid-column:1/-1">Período: '+ktClosingLabel(m)+'</p>'+
  metric('Valor total das tattoos',total)+
  metric('Despesas do fechamento',expenseTotal,'bad')+
  metric('Sinais e antecipações',sinais,'good')+
  metric('Falta receber',cyclePending,'warn')+
- metric('Faturamento total recebido',serviceRevenue,'good');
+ metric('Recebido no caixa neste fechamento',actualCash,'good')+
+ metric('Pagamentos das tattoos deste fechamento',allPaid,'good')+
+ metric('Saldo de caixa (entradas − despesas pagas)',actualCash-spent,'good');
+ $k('ktAuditSummary').innerHTML='<p class="hint">Tatuagens cadastradas neste fechamento: <b>'+appointments.length+'</b> · Valor contratado: <b>'+money(total)+'</b> · Recebido referente a essas tattoos: <b>'+money(allPaid)+'</b> · A receber: <b>'+money(cyclePending)+'</b>. O caixa por data pode ser diferente porque inclui pagamentos de sessões de outros períodos.</p>';
+ $k('ktAuditRows').innerHTML=table(['Data da sessão','Cliente','Tatuagem','Total','Recebido','Falta receber','Ação'],appointments.slice().sort((a,b)=>a.data.localeCompare(b.data)).map(a=>{const paid=Math.min(num(a.valor),Math.max(0,ktPaid(a.id)));return `<tr><td>${dateBR(a.data)}</td><td>${safe(client(a.clienteId)?.nome||'Cliente removido')}</td><td>${safe(a.servico)}</td><td>${money(a.valor)}</td><td style="color:var(--green)">${money(paid)}</td><td>${money(Math.max(0,num(a.valor)-paid))}</td><td><button onclick="editAg('${a.id}')">Editar</button></td></tr>`}));
  const em=$k('ktExpenseMonth').value||ktCurrentClosing();
  const monthBills=db.contas.filter(c=>ktInClosing(c.vencimento,em));
  const paidBills=monthBills.filter(c=>c.status==='pago');
