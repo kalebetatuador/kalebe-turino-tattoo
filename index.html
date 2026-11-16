@@ -110,7 +110,7 @@ renderICS();
 <script>
 (function(){'use strict';
 const el=id=>document.getElementById(id), status=s=>el('cloudStatus').textContent=s;
-const K='kt_cloud_cfg_v2', T='kt_cloud_session_v2', C='kt_magic_last_sent';let cfg=null, session=null, busy=false, rev=0, ready=false, timer=null;
+const K='kt_cloud_cfg_v2', T='kt_cloud_session_v2', C='kt_magic_last_sent';let cfg=null, session=null, busy=false, rev=0, ready=false, timer=null, syncInterval=null, dirty=false, changeSeq=0;
 try{cfg=JSON.parse(localStorage.getItem(K)||'null')}catch{cfg=null}function panel(id){['cloudSetup','cloudLogin','cloudImport'].forEach(x=>el(x).hidden=x!==id)}
 function validate(){return cfg&&/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(cfg.url)&&cfg.key&&!cfg.key.startsWith('sb_secret_')&&!cfg.key.toLowerCase().includes('service_role')}
 function start(){panel(validate()?'cloudLogin':'cloudSetup');if(validate()) {el('cloudUrl').value=cfg.url;el('cloudKey').value=cfg.key;} }
@@ -120,10 +120,53 @@ async function req(path,opts){if(session?.expires_at && Date.now()/1000>session.
 async function getProfile(){const user=await req('/auth/v1/user');const p=await req('/rest/v1/profiles?select=role,display_name&user_id=eq.'+encodeURIComponent(user.id));if(!p?.length||p[0].role!=='admin')throw Error('Conta sem permissão. Cadastre seu perfil no Supabase.');return p[0]}
 function validData(d){return d&&Array.isArray(d.clientes)&&Array.isArray(d.agenda)&&Array.isArray(d.fin)&&d.cfg&&typeof d.cfg==='object'}
 function redactAssistant(d){const v=structuredClone(d);v.fin=[];v.migracao=undefined;return v}
-async function load(){const profile=await getProfile();const rows=await req('/rest/v1/studio_state?select=payload,revision&id=eq.main');if(rows.length){if(!validData(rows[0].payload))throw Error('Dados online inválidos.');db=rows[0].payload;rev=rows[0].revision;ready=true;enter(profile);return;}panel('cloudImport');status('Acesso autorizado: '+profile.display_name+'.');window._cloudProfile=profile}
-function enter(profile){document.body.classList.add('cloudReady');el('cloudGate').hidden=true;el('cloudBar').hidden=false;el('cloudLabel').textContent='☁ Online • '+profile.display_name+' ('+profile.role+')';if(profile.role!=='admin'){document.querySelectorAll('#tabs [data-tab="financeiro"],#tabs [data-tab="relatorios"]').forEach(e=>e.hidden=true);document.querySelectorAll('button[onclick="exportData()"],label.btn').forEach(e=>e.hidden=true)}fillCfg();renderAll();}
-async function commit(){if(!ready||busy)return;busy=true;try{const result=await req('/rest/v1/rpc/update_studio_state',{method:'POST',body:{expected_revision:rev,new_payload:db}});if(typeof result!=='number')throw Error('Resposta de gravação inválida');rev=result;el('cloudLabel').textContent='☁ Salvo online';}catch(e){ready=false;el('cloudGate').hidden=false;panel('cloudLogin');status('Sincronização interrompida: '+e.message+'\nRecarregue antes de editar novamente.');}finally{busy=false}}
-const oldSave=save;save=function(){if(!ready){alert('Conexão online não está pronta. Nenhuma alteração foi enviada.');return;}oldSave();clearTimeout(timer);timer=setTimeout(commit,350)};
+async function load(){const profile=await getProfile();const rows=await req('/rest/v1/studio_state?select=payload,revision&id=eq.main');if(rows.length){if(!validData(rows[0].payload))throw Error('Dados online inválidos.');db=rows[0].payload;rev=rows[0].revision;dirty=false;ready=true;enter(profile);return;}panel('cloudImport');status('Acesso autorizado: '+profile.display_name+'.');window._cloudProfile=profile}
+function enter(profile){startSync();document.body.classList.add('cloudReady');el('cloudGate').hidden=true;el('cloudBar').hidden=false;el('cloudLabel').textContent='☁ Online • '+profile.display_name+' ('+profile.role+')';if(profile.role!=='admin'){document.querySelectorAll('#tabs [data-tab="financeiro"],#tabs [data-tab="relatorios"]').forEach(e=>e.hidden=true);document.querySelectorAll('button[onclick="exportData()"],label.btn').forEach(e=>e.hidden=true)}fillCfg();renderAll();}
+async function commit(){
+ if(!ready||busy||!dirty)return;
+ busy=true;clearTimeout(timer);
+ const snapshot=JSON.parse(JSON.stringify(db)),seq=changeSeq,expected=rev;
+ try{
+  const result=await req('/rest/v1/rpc/update_studio_state',{method:'POST',body:{expected_revision:expected,new_payload:snapshot}});
+  if(typeof result!=='number')throw Error('Resposta de gravação inválida');
+  rev=result;
+  if(seq===changeSeq){dirty=false;el('cloudLabel').textContent='☁ Salvo online';}
+  else el('cloudLabel').textContent='☁ Salvando novas alterações...';
+ }catch(e){
+  ready=false;el('cloudGate').hidden=false;panel('cloudLogin');
+  status('Sincronização interrompida: '+e.message+'\nSuas alterações locais foram preservadas neste navegador. Recarregue antes de editar novamente; não importe backups antigos por cima dos dados online.');
+ }finally{busy=false;if(ready&&dirty)timer=setTimeout(commit,150)}
+}
+async function pullLatest(){
+ if(!ready||busy||dirty||document.hidden)return;
+ try{
+  const rows=await req('/rest/v1/studio_state?select=payload,revision&id=eq.main');
+  if(!rows?.length||!validData(rows[0].payload))return;
+  if(rows[0].revision===rev)return;
+  // A local edit made while the request was in flight takes precedence.
+  if(busy||dirty)return;
+  db=rows[0].payload;rev=rows[0].revision;
+  localStorage.setItem(KEY,JSON.stringify(db));
+  fillCfg();renderAll();
+  el('cloudLabel').textContent='☁ Atualizado com outro dispositivo';
+ }catch(e){el('cloudLabel').textContent='☁ Sem conexão • tentando sincronizar';}
+}
+function startSync(){
+ if(syncInterval)clearInterval(syncInterval);
+ syncInterval=setInterval(pullLatest,12000);
+ document.removeEventListener('visibilitychange',onVisible);
+ document.addEventListener('visibilitychange',onVisible);
+ window.removeEventListener('focus',pullLatest);
+ window.addEventListener('focus',pullLatest);
+}
+function onVisible(){if(!document.hidden)pullLatest()}
+const oldSave=save;
+save=function(){
+ if(!ready){alert('Conexão online não está pronta. Nenhuma alteração foi enviada.');return;}
+ dirty=true;changeSeq++;
+ oldSave();clearTimeout(timer);
+ timer=setTimeout(commit,350);
+};
 // Local state is never automatically uploaded; initial upload is explicitly confirmed.
 el('cloudSaveConfig').onclick=()=>{cfg={url:el('cloudUrl').value.trim().replace(/\/$/,''),key:el('cloudKey').value.trim()};if(!validate())return status('Informe URL Supabase e chave pública válidas.');localStorage.setItem(K,JSON.stringify(cfg));panel('cloudLogin');status('Conexão configurada.');};
 el('cloudChange').onclick=()=>{panel('cloudSetup');status('')};
@@ -381,4 +424,17 @@ const priorSwitch=switchTab;switchTab=function(id){if(id==='financeiro')$k('finM
 const oldImport=importData;importData=async function(e){await oldImport(e);ensure();draw()};
 reset();draw();
 })();
-</script></body></html>
+</script><style id="kt-mobile-improvements">
+/* Mobile-friendly layout without altering financial calculations or stored data. */
+@media(max-width:700px){
+ body{font-size:14px}header{padding:14px 12px;align-items:flex-start}header h1{font-size:19px}header .row{width:100%;gap:7px}header .row button,header .row .btn{flex:1;text-align:center;font-size:12px;padding:10px 6px}
+ main{padding:12px 10px 45px}nav{display:flex;flex-wrap:nowrap;overflow-x:auto;gap:7px;margin-bottom:12px;padding-bottom:7px;scrollbar-width:thin;-webkit-overflow-scrolling:touch}nav button{flex:0 0 auto;white-space:nowrap;padding:11px 12px;font-size:13px}
+ .panel,.card{padding:13px;border-radius:12px}.panel{margin-top:12px}.panel h2{font-size:16px}.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.card strong{font-size:20px;overflow-wrap:anywhere}.card small{font-size:11px}
+ form,.extra-form{grid-template-columns:1fr!important;gap:10px}form .wide{grid-column:1}input,select,textarea{font-size:16px;min-width:0}button,.btn{min-height:42px}
+ .row.between{align-items:stretch}.toolbar{width:100%}.toolbar input{max-width:none;width:100%}.tablewrap,.extra-table,.imp-table{overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch}table,.extra-table table{min-width:650px}th,td{padding:10px 8px;font-size:12px}
+ .extra-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.extra-card{padding:12px}.extra-card strong{font-size:19px}
+ .cal-grid{gap:2px}.cal-day{min-height:56px;padding:2px}.cal-event{font-size:8px;line-height:1.2}
+ #cloudGate{padding:12px}#cloudGate .gate{padding:17px;margin:18px auto}#cloudBar{padding:8px 12px;font-size:12px}
+}
+@media(max-width:380px){.grid,.extra-grid{grid-template-columns:1fr 1fr}.card strong{font-size:18px}}
+</style></body></html>
