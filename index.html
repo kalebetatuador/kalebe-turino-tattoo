@@ -448,18 +448,35 @@ const SCOPE='https://www.googleapis.com/auth/calendar.events.owned https://www.g
 const $i=id=>document.getElementById(id);
 const storageKey='kt_google_calendar_link_v1';
 let token='', tokenUntil=0, tokenClient=null, requesting=false, processing=false;
-let prefs={enabled:false,calendarId:'primary',duration:120,startedAt:null};
-try{prefs={...prefs,...JSON.parse(localStorage.getItem(storageKey)||'{}')}}catch{}
-const status=(t)=>{if($i('ktSyncStatus'))$i('ktSyncStatus').textContent=t};
+const defaultsGoogle={enabled:false,calendarId:'primary',duration:120,startedAt:null};
+let localPrefs={...defaultsGoogle};
+try{localPrefs={...localPrefs,...JSON.parse(localStorage.getItem(storageKey)||'{}')}}catch{}
+// Shared preferences live in the Supabase-backed studio payload, not localStorage.
+// Local settings from older versions are only a fallback until cloud data is ready.
+function sharedPrefs(){
+ if(!document.body.classList.contains('cloudReady'))return localPrefs;
+ if(!db.googleCalendarPrefs||typeof db.googleCalendarPrefs!=='object'){
+  db.googleCalendarPrefs={...defaultsGoogle};
+ }
+ return db.googleCalendarPrefs;
+}
+const prefs=new Proxy({}, {
+ get(_target,key){return sharedPrefs()[key]},
+ set(_target,key,value){sharedPrefs()[key]=value;return true}
+});
+const status=t=>{if($i('ktSyncStatus'))$i('ktSyncStatus').textContent=t};
 const norm=v=>String(v||'').replace(/\D/g,'');
 const canEdit=()=>document.body.classList.contains('cloudReady');
-const persistPrefs=()=>localStorage.setItem(storageKey,JSON.stringify(prefs));
+function persistPrefs(){
+ if(canEdit()){save();}
+ else {localStorage.setItem(storageKey,JSON.stringify(localPrefs));}
+}
 const readyToken=()=>token&&Date.now()<tokenUntil-60000;
 function syncState(){if(!db.googleCalendarSync||typeof db.googleCalendarSync!=='object')db.googleCalendarSync={};return db.googleCalendarSync}
 function escapeHtml(s){return esc(s)}
 function build(){
  const section=$i('config');const panel=document.createElement('div');panel.className='panel';panel.id='ktIntegracao';
- panel.innerHTML=`<h2>Google Agenda — sincronização de novos agendamentos</h2><p class="hint">Ative uma única vez. Agendamentos já cadastrados antes da ativação não serão enviados. A sincronização cria eventos no Google Agenda; não importa, altera ou apaga eventos antigos. Os dados principais continuam no Supabase.</p><div class="kt2grid"><label>Duração padrão de cada sessão (minutos)<input type="number" id="ktDuration" min="15" max="720" step="15" value="120"></label><label>Agenda de destino<select id="ktCalendarId"><option value="primary">Agenda principal</option></select></label></div><div class="kt2actions"><button id="ktGoogleConnect">Conectar Google Agenda</button><button id="ktGoogleActivate" class="primary">Ativar somente novos agendamentos</button><button id="ktGoogleSync">Sincronizar pendentes</button><button id="ktGoogleDisable">Pausar sincronização</button></div><p class="kt2status" id="ktSyncStatus"></p><p class="hint">A autorização Google é solicitada no navegador. Se o login expirar, clique novamente em Conectar. Não há sincronização automática em segundo plano quando o sistema está fechado. A agenda e o financeiro existentes não serão substituídos.</p>`;
+ panel.innerHTML=`<h2>Google Agenda — sincronização de novos agendamentos</h2><p class="hint">Ative uma única vez. Agendamentos já cadastrados antes da ativação não serão enviados. A sincronização cria eventos no Google Agenda; não importa, altera ou apaga eventos antigos. Os dados principais continuam no Supabase.</p><div class="kt2grid"><label>Duração padrão de cada sessão (minutos)<input type="number" id="ktDuration" min="15" max="720" step="15" value="120"></label><label>Agenda de destino<select id="ktCalendarId"><option value="primary">Agenda principal</option></select></label></div><div class="kt2actions"><button id="ktGoogleConnect">Conectar Google Agenda</button><button id="ktGoogleActivate" class="primary">Ativar somente novos agendamentos</button><button id="ktGoogleSync">Sincronizar pendentes</button><button id="ktGoogleDisable">Pausar sincronização</button></div><p class="kt2status" id="ktSyncStatus"></p><p class="hint">A ativação e a agenda escolhida ficam salvas online para PC e celular. A autorização Google precisa ser feita em cada navegador e renovada quando expirar. Não há sincronização automática em segundo plano quando o sistema está fechado. A agenda e o financeiro existentes não serão substituídos.</p>`;
  section.appendChild(panel);
  const quick=document.createElement('div');quick.className='panel';quick.id='ktQuick';
  quick.innerHTML=`<h2>Cadastro rápido pelo WhatsApp</h2><p class="hint">Copie o nome e o número da conversa do WhatsApp, confira os dados e confirme. Nenhuma conversa é lida automaticamente.</p><div class="kt2grid"><label>Nome do cliente<input id="ktQuickName" placeholder="Nome do WhatsApp"></label><label>WhatsApp com DDD<input id="ktQuickPhone" inputmode="tel" placeholder="(32) 99999-9999"></label><label>Serviço (opcional)<input id="ktQuickService" placeholder="Ex.: escrita fine line"></label></div><div class="kt2actions"><button id="ktQuickSave" class="primary">Confirmar e salvar cliente</button><button id="ktQuickSchedule">Confirmar e abrir agendamento</button><button id="ktQuickWhats">Abrir conversa no WhatsApp</button></div><p id="ktQuickStatus" class="hint"></p>`;
@@ -476,10 +493,24 @@ function build(){
  $i('ktQuickWhats').onclick=()=>{const phone=norm($i('ktQuickPhone').value).replace(/^55/,'');if(phone.length<10||phone.length>11)return alert('Informe um número com DDD válido.');window.open('https://wa.me/55'+phone,'_blank','noopener')};
  status(prefs.enabled?'Ativa. Conecte sua conta Google para enviar novos agendamentos.':'Ainda não ativada. Nenhum agendamento existente será enviado.');
 }
+function refreshGooglePanel(){
+ if(!$i('ktIntegracao')||!canEdit())return;
+ $i('ktDuration').value=prefs.duration||120;
+ const select=$i('ktCalendarId');
+ const selected=prefs.calendarId||'primary';
+ if(![...select.options].some(o=>o.value===selected)){
+  select.add(new Option(selected==='primary'?'Agenda principal':'Agenda escolhida (conecte para confirmar)',selected));
+ }
+ select.value=selected;
+ status(prefs.enabled?(readyToken()?'Sincronização ativa. Google conectado.':'Sincronização ativa. Conecte o Google neste navegador para enviar eventos.'):'Sincronização pausada.');
+}
+const originalGoogleRender=renderAll;
+renderAll=function(){originalGoogleRender();refreshGooglePanel()};
+window.addEventListener('focus',()=>{if(canEdit())setTimeout(refreshGooglePanel,300)});
 function googleLibrary(){return new Promise((resolve,reject)=>{if(window.google?.accounts?.oauth2)return resolve();const existing=document.querySelector('script[data-kt-google]');if(existing){existing.addEventListener('load',resolve,{once:true});existing.addEventListener('error',()=>reject(Error('Falha ao carregar login Google')),{once:true});return}const s=document.createElement('script');s.src='https://accounts.google.com/gsi/client';s.async=true;s.dataset.ktGoogle='1';s.onload=resolve;s.onerror=()=>reject(Error('Não foi possível carregar o login Google'));document.head.appendChild(s)})}
 async function connect(){try{if(!canEdit())throw Error('Entre no sistema online primeiro.');await googleLibrary();if(requesting)return;requesting=true;status('Aguardando autorização do Google...');tokenClient=google.accounts.oauth2.initTokenClient({client_id:CLIENT_ID,scope:SCOPE,callback:async response=>{requesting=false;if(response.error){status('Autorização não concluída: '+response.error);return}token=response.access_token;tokenUntil=Date.now()+(Number(response.expires_in)||3600)*1000;status('Google conectado. Escolha a agenda e ative a sincronização.');try{await listCalendars()}catch(e){status('Google conectado. Não foi possível listar agendas: '+e.message)}if(prefs.enabled)syncPending(false)}});tokenClient.requestAccessToken({prompt:readyToken()?'':'consent'})}catch(e){requesting=false;status(e.message)}}
 async function googleRequest(url,options={}){if(!readyToken())throw Error('Conecte sua conta Google novamente.');const r=await fetch(url,{...options,headers:{Authorization:'Bearer '+token,'Content-Type':'application/json',...(options.headers||{})}});const data=await r.json().catch(()=>({}));if(!r.ok)throw Error(data.error?.message||'Google retornou HTTP '+r.status);return data}
-async function listCalendars(){const data=await googleRequest('https://www.googleapis.com/calendar/v3/users/me/calendarList');const select=$i('ktCalendarId');select.innerHTML='';for(const c of data.items||[]){if(c.accessRole!=='owner')continue;const option=document.createElement('option');option.value=c.id;option.textContent=c.summary+(c.primary?' (principal)':'');select.appendChild(option)}if(!select.options.length){select.add(new Option('Agenda principal','primary'))}select.value=[...select.options].some(o=>o.value===prefs.calendarId)?prefs.calendarId:select.options[0].value;prefs.calendarId=select.value;persistPrefs()}
+async function listCalendars(){const data=await googleRequest('https://www.googleapis.com/calendar/v3/users/me/calendarList');const select=$i('ktCalendarId');select.innerHTML='';for(const c of data.items||[]){if(c.accessRole!=='owner')continue;const option=document.createElement('option');option.value=c.id;option.textContent=c.summary+(c.primary?' (principal)':'');select.appendChild(option)}if(!select.options.length){select.add(new Option('Agenda principal','primary'))}select.value=[...select.options].some(o=>o.value===prefs.calendarId)?prefs.calendarId:select.options[0].value;if(prefs.calendarId!==select.value){prefs.calendarId=select.value;persistPrefs()}}
 function activate(){if(!canEdit())return alert('Entre no sistema online primeiro.');if(!readyToken())return alert('Primeiro clique em Conectar Google Agenda.');if(prefs.enabled)return status('Sincronização já ativada. Novos agendamentos serão enviados.');if(!confirm('Ativar agora? Somente agendamentos criados DEPOIS desta confirmação serão enviados. Nenhum agendamento antigo será importado, alterado ou excluído.'))return;prefs.enabled=true;prefs.startedAt=new Date().toISOString();prefs.calendarId=$i('ktCalendarId').value||'primary';persistPrefs();status('Ativada! Cadastre um novo agendamento para sincronizá-lo com o Google Agenda.')}
 function newAppointments(){const map=syncState();return db.agenda.filter(a=>a.googleSyncCreatedAt&&prefs.startedAt&&a.googleSyncCreatedAt>=prefs.startedAt&&a.status!=='Cancelado'&&!map[a.id]&&a.data&&a.hora&&client(a.clienteId))}
 async function syncPending(manual){if(processing||!prefs.enabled)return;if(!canEdit())return;if(!readyToken()){if(manual)status('Conecte o Google novamente antes de sincronizar.');return}const arr=newAppointments();if(!arr.length){if(manual)status('Nenhum agendamento novo pendente. Os antigos permanecem intocados.');return}processing=true;let sent=0;try{for(const a of arr){if(!readyToken())throw Error('Sessão Google expirada. Conecte novamente.');const c=client(a.clienteId);const start=new Date(a.data+'T'+a.hora+':00');if(Number.isNaN(start.getTime()))continue;const end=new Date(start.getTime()+prefs.duration*60000);const localDate=d=>{const z=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}:00`};const payload={summary:'Tattoo — '+c.nome,description:'Serviço: '+a.servico+'\nCliente: '+c.nome+'\nWhatsApp: '+(c.telefone||'')+'\nAgendamento criado no sistema Kalebe Turino Tattoo.',start:{dateTime:localDate(start),timeZone:'America/Sao_Paulo'},end:{dateTime:localDate(end),timeZone:'America/Sao_Paulo'},extendedProperties:{private:{ktStudioAppointmentId:a.id}}};
@@ -491,7 +522,16 @@ if(!db.agenda.some(x=>x.id===a.id))continue;syncState()[a.id]={eventId:event.id,
 function quickSave(openAgenda){if(!canEdit())return alert('Entre no sistema online primeiro.');const name=$i('ktQuickName').value.trim(),phone=norm($i('ktQuickPhone').value).replace(/^55/,'');if(name.length<2||phone.length<10||phone.length>11)return alert('Informe nome e WhatsApp com DDD válidos.');const found=db.clientes.find(c=>norm(c.telefone).replace(/^55/,'')===phone);if(found){if(!confirm('Já existe cliente com este WhatsApp: '+found.nome+'. Usar o cadastro existente?'))return;finish(found.id,openAgenda);return}if(!confirm('Confirmar cadastro?\nNome: '+name+'\nWhatsApp: '+phone+'\n\nO cliente será salvo no seu sistema.'))return;const id=uid();db.clientes.push({id,nome:name,telefone:phone,instagram:'',obs:''});save();finish(id,openAgenda)}
 function finish(id,openAgenda){$i('ktQuickStatus').textContent='Cliente confirmado e vinculado ao sistema.';if(openAgenda){const service=$i('ktQuickService').value;switchTab('agenda');resetAg();$i('agCliente').value=id;$i('agServico').value=service;window.scrollTo(0,0)}else{renderClientes();$i('ktQuickName').value='';$i('ktQuickPhone').value='';$i('ktQuickService').value=''}}
 // Marca apenas registros novos. A marca é gravada no próprio agendamento, nunca em agendamentos antigos.
-const form=$i('agForm');form.addEventListener('submit',()=>{if(!canEdit()||!prefs.enabled)return;const id=$i('agId').value;if(id)return;const existing=new Set(db.agenda.map(a=>a.id));setTimeout(()=>{const added=db.agenda.filter(a=>!existing.has(a.id));if(!added.length)return;for(const a of added)a.googleSyncCreatedAt=new Date().toISOString();save();setTimeout(()=>syncPending(false),1100)},0)},true);
+const form=$i('agForm');form.addEventListener('submit',()=>{
+ if(!canEdit()||!prefs.enabled||$i('agId').value)return;
+ const existing=new Set(db.agenda.map(a=>a.id));
+ setTimeout(()=>{
+  const added=db.agenda.filter(a=>!existing.has(a.id));
+  if(!added.length)return;
+  for(const a of added)a.googleSyncCreatedAt=new Date().toISOString();
+  save();setTimeout(()=>syncPending(false),1100);
+ },0);
+},true);
 // Evita exportar informações do Google em um backup separado: apenas IDs de eventos permanecem no estado existente.
 build();
 })();
