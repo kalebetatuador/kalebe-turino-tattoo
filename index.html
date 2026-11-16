@@ -309,7 +309,7 @@ function draw(){
    const paidTotal=Math.min(full,Math.max(0,ktPaid(a.id)));
    // Pagamentos parciais registrados como sinal; não contam quitações integrais.
    const initial=Math.min(full,Math.max(0,num(db.fin.find(f=>f.id==='sinal-'+a.id)?.valor ?? a.sinal)));
-   if(initial>0&&initial<full)return sum+initial;
+   if(initial>0&&initial<full&&paidTotal<full)return sum+initial;
    // Uma tattoo totalmente paga só é antecipação se a sessão ainda não foi concluída
    // e o recebimento ocorreu antes da data agendada.
    if(paidTotal>=full&&a.status!=='Concluído'&&payments.length&&payments.every(f=>f.data&&f.data<a.data))return sum+full;
