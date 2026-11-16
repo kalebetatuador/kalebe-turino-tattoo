@@ -496,7 +496,7 @@ function syncState(){if(!db.googleCalendarSync||typeof db.googleCalendarSync!=='
 function escapeHtml(s){return esc(s)}
 function build(){
  const section=$i('config');const panel=document.createElement('div');panel.className='panel';panel.id='ktIntegracao';
- panel.innerHTML=`<h2>Google Agenda — sincronização de novos agendamentos</h2><p class="hint">Ative uma única vez. Agendamentos já cadastrados antes da ativação não serão enviados. A sincronização cria eventos no Google Agenda; não importa, altera ou apaga eventos antigos. Os dados principais continuam no Supabase.</p><div class="kt2grid"><label>Duração padrão de cada sessão (minutos)<input type="number" id="ktDuration" min="15" max="720" step="15" value="120"></label><label>Agenda de destino<select id="ktCalendarId"><option value="primary">Agenda principal</option></select></label></div><div class="kt2actions"><button id="ktGoogleConnect">Conectar Google Agenda</button><button id="ktGoogleActivate" class="primary">Ativar somente novos agendamentos</button><button id="ktGoogleSync">Sincronizar pendentes</button><button id="ktGoogleImport">Buscar eventos do Google</button><button id="ktGoogleDisable">Pausar sincronização</button></div><p class="kt2status" id="ktSyncStatus"></p><div id="ktGoogleImported" class="tablewrap"></div><p class="hint">A ativação e a agenda escolhida são confirmadas no Supabase para PC e celular. A autorização Google precisa ser feita em cada navegador e renovada quando expirar. Enquanto o sistema estiver aberto e autorizado, os eventos do Google serão consultados automaticamente a cada 30 segundos. Eventos importados são somente para consulta: não criam clientes nem movimentações financeiras. Não há sincronização em segundo plano com o sistema fechado. A agenda e o financeiro existentes não serão substituídos.</p>`;
+ panel.innerHTML=`<h2>Google Agenda — sincronização de novos agendamentos</h2><p class="hint">Ative uma única vez. Agendamentos já cadastrados antes da ativação não serão enviados. A sincronização cria eventos no Google Agenda; não importa, altera ou apaga eventos antigos. Os dados principais continuam no Supabase.</p><div class="kt2grid"><label>Duração padrão de cada sessão (minutos)<input type="number" id="ktDuration" min="15" max="720" step="15" value="120"></label><label>Agenda de destino<select id="ktCalendarId"><option value="primary">Agenda principal</option></select></label></div><div class="kt2actions"><button id="ktGoogleConnect">Conectar Google Agenda</button><button id="ktGoogleActivate" class="primary">Ativar somente novos agendamentos</button><button id="ktGoogleSync">Sincronizar pendentes</button><button id="ktGoogleImport">Buscar eventos do Google</button><button id="ktGoogleDisable">Pausar sincronização</button></div><p class="kt2status" id="ktSyncStatus"></p><div id="ktGoogleImported" class="tablewrap"></div><p class="hint">Eventos do Google com horário serão cadastrados automaticamente na Agenda do estúdio, sem gerar receitas. Eventos de dia inteiro permanecem somente para consulta. A ativação e a agenda escolhida são confirmadas no Supabase para PC e celular. A autorização Google precisa ser feita em cada navegador e renovada quando expirar. Enquanto o sistema estiver aberto e autorizado, os eventos do Google serão consultados automaticamente a cada 30 segundos. Eventos importados são somente para consulta: não criam clientes nem movimentações financeiras. Não há sincronização em segundo plano com o sistema fechado. A agenda e o financeiro existentes não serão substituídos.</p>`;
  section.appendChild(panel);
  const quick=document.createElement('div');quick.className='panel';quick.id='ktQuick';
  quick.innerHTML=`<h2>Cadastro rápido pelo WhatsApp</h2><p class="hint">Copie o nome e o número da conversa do WhatsApp, confira os dados e confirme. Nenhuma conversa é lida automaticamente.</p><div class="kt2grid"><label>Nome do cliente<input id="ktQuickName" placeholder="Nome do WhatsApp"></label><label>WhatsApp com DDD<input id="ktQuickPhone" inputmode="tel" placeholder="(32) 99999-9999"></label><label>Serviço (opcional)<input id="ktQuickService" placeholder="Ex.: escrita fine line"></label></div><div class="kt2actions"><button id="ktQuickSave" class="primary">Confirmar e salvar cliente</button><button id="ktQuickSchedule">Confirmar e abrir agendamento</button><button id="ktQuickWhats">Abrir conversa no WhatsApp</button></div><p id="ktQuickStatus" class="hint"></p>`;
@@ -547,8 +547,26 @@ function importedGoogle(){if(!Array.isArray(db.googleImportedEvents))db.googleIm
 function renderGoogleImported(){
  const box=$i('ktGoogleImported');if(!box)return;
  const list=importedGoogle().filter(x=>x.calendarId===prefs.calendarId).sort((a,b)=>(a.data+a.hora).localeCompare(b.data+b.hora));
- box.innerHTML='<h3>Compromissos encontrados no Google Agenda ('+list.length+')</h3><p class="hint">Atualização automática a cada 30 segundos enquanto esta página estiver aberta e conectada. Eventos externos são apenas consultados: não criam clientes, agendamentos financeiros ou cobranças.</p>'+
+ box.innerHTML='<h3>Compromissos encontrados no Google Agenda ('+list.length+')</h3><p class="hint">Atualização automática a cada 30 segundos enquanto esta página estiver aberta e conectada. Eventos com horário criam agendamentos sem cobrança; eventos de dia inteiro ficam para consulta.</p>'+
  (list.length?'<div style="max-height:280px;overflow:auto"><table><thead><tr><th>Data</th><th>Hora</th><th>Compromisso</th><th>Ação</th></tr></thead><tbody>'+list.slice(-100).map(x=>'<tr><td>'+esc(x.data)+'</td><td>'+esc(x.hora)+'</td><td>'+esc(x.titulo)+'</td><td><button type="button" onclick="ktUseGoogleEvent(decodeURIComponent(\''+encodeURIComponent(x.id)+'\'))">Criar agendamento</button></td></tr>').join('')+'</tbody></table></div>':'<p class="hint">Nenhum compromisso externo carregado. Conecte e clique em Buscar eventos do Google.</p>');
+}
+// Importa compromissos externos para a agenda do estúdio de forma idempotente.
+// Não cria receitas, sinais nem movimentações financeiras.
+function importExternalAppointments(events, calendarId){
+ let created=0;
+ for(const event of events){
+  if(!event.id||!/^\d{4}-\d{2}-\d{2}$/.test(event.data)||!/^\d{2}:\d{2}$/.test(event.hora))continue;
+  const key=calendarId+'::'+event.id;
+  if(db.agenda.some(a=>a.googleExternalKey===key))continue;
+  // A identificação por evento é estável mesmo quando o usuário edita o título.
+  const title=String(event.titulo||'Compromisso Google').trim();
+  // Usa um cliente técnico único para não atribuir o compromisso à pessoa errada.
+  let placeholder=db.clientes.find(c=>c.googlePlaceholder===true);
+  if(!placeholder){placeholder={id:uid(),nome:'Cliente a identificar (Google Agenda)',telefone:'',instagram:'',obs:'Cadastro técnico de eventos importados; substitua pelo cliente correto.',googlePlaceholder:true};db.clientes.push(placeholder)}
+  db.agenda.push({id:uid(),clienteId:placeholder.id,data:event.data,hora:event.hora,servico:title,valor:0,sinal:0,status:'Pendente',obs:'Importado automaticamente do Google Agenda. Confira cliente, serviço e valor antes de cobrar.\nEvento: '+event.id,googleExternalKey:key,googleExternalCalendarId:calendarId,googleExternalEventId:event.id});
+  created++;
+ }
+ return created;
 }
 async function importGoogleEvents(manual){
  if(importingGoogle||!canEdit()||!prefs.enabled)return;
@@ -570,8 +588,9 @@ async function importGoogleEvents(manual){
   });
   const previous=importedGoogle().filter(x=>x.calendarId!==cal);
   db.googleImportedEvents=[...previous,...incoming];
+  const created=importExternalAppointments(incoming,cal);
   save();await window.ktCloudFlush();lastGooglePoll=Date.now();renderGoogleImported();
-  if(manual)status('Consulta concluída: '+incoming.length+' compromissos externos no Google. Sem duplicar agendamentos ou alterar o financeiro.');
+  if(manual||created)status('Consulta concluída: '+incoming.length+' eventos encontrados; '+created+' novo(s) agendamento(s) criado(s) no sistema. Financeiro preservado.');
  }catch(e){status('Não foi possível consultar os eventos do Google: '+e.message)}finally{importingGoogle=false}
 }
 // Consulta recorrente enquanto a página estiver aberta e autorizada.
